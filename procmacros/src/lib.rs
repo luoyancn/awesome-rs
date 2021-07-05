@@ -1,8 +1,11 @@
+use std::collections::HashMap;
+
 use proc_macro::TokenStream;
 
 use proc_macro2;
 use quote::quote;
-use syn::{self, parse_macro_input, spanned::Spanned};
+use syn::visit::{self, Visit};
+use syn::{self, parse_macro_input, parse_quote, spanned::Spanned};
 
 #[proc_macro_derive(Builder)]
 pub fn derive(input: TokenStream) -> TokenStream {
@@ -450,4 +453,224 @@ fn generate_builder_function(
     };
 
     Ok(final_token)
+}
+
+/***************************************************************************************************/
+#[proc_macro_derive(CustomDebug, attributes(debug))]
+pub fn derive_debug(input: TokenStream) -> TokenStream {
+    let st = parse_macro_input!(input as syn::DeriveInput);
+    match do_expand_debug(&st) {
+        Ok(token_stream) => token_stream.into(),
+        Err(error) => error.to_compile_error().into(),
+    }
+}
+
+fn do_expand_debug(st: &syn::DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
+    Ok(generate_debug_trait(st)?)
+}
+
+fn generate_debug_trait(st: &syn::DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
+    let struct_name_literal = st.ident.to_string();
+    let struct_name_ident = &st.ident;
+    let mut debug_body = proc_macro2::TokenStream::new();
+
+    debug_body.extend(quote! {
+        ft.debug_struct(#struct_name_literal)
+    });
+
+    let fields = get_filed_from_derive_input_debug(st)?;
+    for field in fields.iter() {
+        let ident = field.ident.as_ref().unwrap();
+        let ident_iteral = ident.to_string();
+        if let Some(format_label) = get_speciald_format_of_field(&field)? {
+            debug_body
+                .extend(quote! {.field(#ident_iteral, &format_args!(#format_label ,&self.#ident))});
+        } else {
+            debug_body.extend(quote! {.field(#ident_iteral, &self.#ident)});
+        }
+    }
+
+    debug_body.extend(quote! {.finish()});
+
+    let generics = get_generics(&st)?;
+
+    let (impl_block, generic_block, where_block) = generics.split_for_impl();
+
+    let ret = quote! {
+        impl #impl_block std::fmt::Debug for #struct_name_ident #generic_block #where_block {
+            fn fmt(&self, ft: &mut std::fmt::Formatter) -> std::fmt::Result {
+                #debug_body
+            }
+        }
+    };
+
+    Ok(ret)
+}
+
+fn get_filed_from_derive_input_debug(st: &syn::DeriveInput) -> syn::Result<&StructFields> {
+    if let syn::Data::Struct(syn::DataStruct {
+        fields: syn::Fields::Named(syn::FieldsNamed { ref named, .. }),
+        ..
+    }) = st.data
+    {
+        return Ok(named);
+    }
+    Err(syn::Error::new_spanned(
+        st,
+        "Must define on Struct, Not on Enum",
+    ))
+}
+
+fn get_speciald_format_of_field(field: &syn::Field) -> syn::Result<Option<String>> {
+    for attr in &field.attrs {
+        if let Ok(syn::Meta::NameValue(syn::MetaNameValue {
+            ref path, ref lit, ..
+        })) = attr.parse_meta()
+        {
+            if path.is_ident("debug") {
+                if let syn::Lit::Str(ref ident_str) = lit {
+                    let ret = ident_str.value();
+                    let len = ret.len();
+                    match ret.chars().nth(len - 2) {
+                        Some('e') | Some('E') | Some('o') | Some('p') | Some('b') | Some('x')
+                        | Some('X') | Some('?') => return Ok(Some(ident_str.value())),
+                        _ => {
+                            return Err(syn::Error::new(ident_str.span(), "Unexpected format args"))
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(None)
+}
+
+fn get_generics(st: &syn::DeriveInput) -> syn::Result<syn::Generics> {
+    let fields = get_filed_from_derive_input_debug(st)?;
+    let mut generics_params = st.generics.clone();
+    let mut field_type_name = Vec::new();
+    let mut phantomdata_type_param_names = Vec::new();
+    for field in fields {
+        if let Some(name) = get_field_type_name(&field)? {
+            field_type_name.push(name);
+        }
+        if let Some(phd) = get_phantomdata_generic_type_name(&field)? {
+            phantomdata_type_param_names.push(phd);
+        }
+    }
+    let associated_types_map = get_generic_associated_types(st);
+    for param in generics_params.params.iter_mut() {
+        if let syn::GenericParam::Type(t) = param {
+            let type_name = t.ident.to_string();
+            if phantomdata_type_param_names.contains(&type_name)
+                && !field_type_name.contains(&type_name)
+            {
+                continue;
+            }
+            if associated_types_map.contains_key(&type_name)
+                && !field_type_name.contains(&type_name)
+            {
+                continue;
+            }
+            t.bounds.push(parse_quote!(std::fmt::Debug));
+        }
+    }
+    generics_params.make_where_clause();
+    for (_, associated_types) in associated_types_map {
+        for associated_type in associated_types {
+            generics_params
+                .where_clause
+                .as_mut()
+                .unwrap()
+                .predicates
+                .push(parse_quote!(#associated_type:std::fmt::Debug));
+        }
+    }
+    Ok(generics_params)
+}
+
+fn get_phantomdata_generic_type_name(field: &syn::Field) -> syn::Result<Option<String>> {
+    if let syn::Type::Path(syn::TypePath {
+        path: syn::Path { ref segments, .. },
+        ..
+    }) = field.ty
+    {
+        if let Some(syn::PathSegment {
+            ref ident,
+            ref arguments,
+        }) = segments.last()
+        {
+            if ident == "PhantomData" {
+                if let syn::PathArguments::AngleBracketed(syn::AngleBracketedGenericArguments {
+                    args,
+                    ..
+                }) = arguments
+                {
+                    if let Some(syn::GenericArgument::Type(syn::Type::Path(ref arg_path))) =
+                        args.first()
+                    {
+                        if let Some(generic_ident) = arg_path.path.segments.first() {
+                            return Ok(Some(generic_ident.ident.to_string()));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(None)
+}
+
+fn get_field_type_name(field: &syn::Field) -> syn::Result<Option<String>> {
+    if let syn::Type::Path(syn::TypePath {
+        path: syn::Path { ref segments, .. },
+        ..
+    }) = field.ty
+    {
+        if let Some(syn::PathSegment { ref ident, .. }) = segments.last() {
+            return Ok(Some(ident.to_string()));
+        }
+    }
+    Ok(None)
+}
+
+struct TypePathVisitor {
+    generic_type_names: Vec<String>,
+    associated_types: HashMap<String, Vec<syn::TypePath>>,
+}
+
+impl<'ast> Visit<'ast> for TypePathVisitor {
+    fn visit_type_path(&mut self, node: &'ast syn::TypePath) {
+        if node.path.segments.len() >= 2 {
+            let generic_type_name = node.path.segments[0].ident.to_string();
+            if self.generic_type_names.contains(&generic_type_name) {
+                self.associated_types
+                    .entry(generic_type_name)
+                    .or_insert(Vec::new())
+                    .push(node.clone());
+            }
+        }
+        visit::visit_type_path(self, node);
+    }
+}
+
+fn get_generic_associated_types(st: &syn::DeriveInput) -> HashMap<String, Vec<syn::TypePath>> {
+    let origin_generic_param_names: Vec<String> = st
+        .generics
+        .params
+        .iter()
+        .filter_map(|f| {
+            if let syn::GenericParam::Type(ty) = f {
+                return Some(ty.ident.to_string());
+            }
+            return None;
+        })
+        .collect();
+
+    let mut visitor = TypePathVisitor {
+        generic_type_names: origin_generic_param_names,
+        associated_types: HashMap::new(),
+    };
+
+    visitor.visit_derive_input(st);
+    return visitor.associated_types;
 }

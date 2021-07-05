@@ -3,8 +3,10 @@ extern crate slog_logger;
 extern crate slog_scope;
 extern crate slog_stdlog;
 
+use std::marker::PhantomData;
+
 use futurebase;
-use procmacros::{Builder, BuilderEach};
+use procmacros::{Builder, BuilderEach, CustomDebug};
 use short_lived;
 
 fn main() {
@@ -51,6 +53,13 @@ fn main() {
         .build()
         .unwrap();
     info!("{:#?}", builder);
+
+    let cus = Custom {
+        name: "zhangjl",
+        age: 33,
+        other: vec![99.0, 100.0],
+    };
+    info!("{:#?}", cus);
 }
 
 #[derive(Debug, Builder)]
@@ -70,4 +79,15 @@ pub struct CommandEach {
     env: Vec<String>,
     others: Vec<String>,
     current_dir: Option<String>,
+}
+
+trait TraitA {
+    type Value;
+}
+#[derive(CustomDebug)]
+pub struct Custom<'a, T, U: TraitA> {
+    name: &'a str,
+    #[debug = "0b{:08b}"]
+    age: u8,
+    other: T,
 }
