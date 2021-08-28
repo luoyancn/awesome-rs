@@ -1,13 +1,17 @@
 use std::marker::PhantomData;
 
-use procmacros::{Builder, BuilderEach, CustomDebug};
-
+use async_std;
+use futures;
 #[macro_use]
 extern crate slog_logger;
-extern crate slog_scope;
 
+use asyncstd;
+use procmacros::{Builder, BuilderEach, CustomDebug};
+
+//#[async_std::main]
+//async fn main() {
 fn main() {
-    slog_logger::setup_logger(false, "", 0, true, false);
+    slog_logger::setup_logger(false, "", 0, false, false);
     let builder = Command::builder()
         .executable("lucifer".to_owned())
         .args(vec![])
@@ -34,6 +38,14 @@ fn main() {
         .build()
         .unwrap();
     info!("{:#?}", builder);
+    async_std::task::block_on(asyncstd::async_hello());
+
+    let (fake_db, fake_file) = async_std::task::block_on(futures::future::join(
+        asyncstd::connect_db_fake(),
+        asyncstd::open_file_fake(),
+    ));
+
+    info!("{}, {}", fake_db, fake_file);
 }
 
 #[derive(Debug, Builder)]

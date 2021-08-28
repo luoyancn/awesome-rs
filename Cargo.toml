@@ -5,9 +5,11 @@ authors = ["root"]
 edition = "2018"
 
 [dependencies]
-slog-scope = "4.4.0"
-slog-logger = {git = "https://github.com/luoyancn/slog-logger", tag = "v0.6.0"}
+async-std = {version = "1.9.0", features = ["attributes", "unstable"]}
+futures = "0.3.15"
+slog-logger = {git = "https://github.com/luoyancn/slog-logger", tag = "v0.7.0"}
 short-lived = {path = "short-lived", version = "0.1.0"}
 futurebase = {path = "futurebase", version = "0.1.0"}
 procmacros = {path = "procmacros", version = "0.1.0"}
 asyncstd = {path = "asyncstd", version = "0.1.0"}
+tokioasync = {path = "tokioasync", version = "0.1.0"}
