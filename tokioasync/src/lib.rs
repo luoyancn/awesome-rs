@@ -260,4 +260,129 @@ mod tests {
             }
         }
     }
+
+    use tokio::runtime;
+    #[test]
+    fn test_tokio_runtime_multi_thread() {
+        if let Ok(multi_rt) = runtime::Runtime::new() {
+            let mut init = 10;
+            multi_rt.block_on(async {
+                init += 100;
+            });
+            assert_eq!(init, 110);
+            drop(multi_rt);
+        }
+
+        if let Ok(multi_rt) = runtime::Builder::new_multi_thread()
+            .enable_all()
+            .worker_threads(8)
+            .on_thread_start(|| println!("hello multi"))
+            .on_thread_stop(|| println!("goodbye"))
+            .build()
+        {
+            let mut init = 10;
+            multi_rt.block_on(async {
+                init += 100;
+            });
+            assert_eq!(init, 110);
+            drop(multi_rt);
+        }
+    }
+
+    #[test]
+    fn test_tokio_runtime_current_thread() {
+        if let Ok(current_rt) = runtime::Builder::new_current_thread().enable_all().build() {
+            let mut init = 10;
+            let mut str_owned = String::new();
+            current_rt.block_on(async {
+                println!("Using the current runtime");
+                init += 200;
+                str_owned = hello_tokio().await;
+                let _ = current_rt
+                    .spawn(async { println!("hello spawn function") })
+                    .await;
+            });
+            current_rt.spawn_blocking(|| println!("hello spawn blocking function"));
+            assert_eq!(init, 210);
+            assert_eq!("hello tokio", str_owned);
+            drop(current_rt);
+        }
+    }
+
+    #[test]
+    fn test_tokio_runtime_handler() {
+        if let Ok(current_rt) = runtime::Builder::new_multi_thread().enable_all().build() {
+            let handler = current_rt.handle();
+            let task = handler.spawn(async { println!("handler task") });
+            let _ = handler.block_on(async { task.await });
+            drop(current_rt);
+        }
+    }
+
+    use tokio::time;
+    #[tokio::test]
+    async fn test_tokio_time() {
+        let mut ticker = time::interval(time::Duration::from_secs(1));
+        let mut counter = 1;
+        loop {
+            ticker.tick().await;
+            println!("hello ticker");
+            counter += 1;
+            if counter >= 10 {
+                break;
+            }
+        }
+    }
+
+    use tokio::sync;
+    #[tokio::test]
+    async fn test_tokio_oneshot() {
+        let (sender, recevier) = sync::oneshot::channel();
+        tokio::spawn(async move {
+            let res = hello_tokio().await;
+            if let Ok(_) = sender.send(res) {}
+        });
+
+        if let Ok(res) = recevier.await {
+            println!("The result is {}", res);
+            assert_eq!("hello tokio", res);
+        }
+    }
+
+    #[test]
+    fn test_tokio_oneshot_block_on() {
+        if let Ok(rt) = runtime::Builder::new_multi_thread().enable_all().build() {
+            let (sender, recevier) = sync::oneshot::channel();
+            let send_task = async {
+                let res = hello_tokio().await;
+                if let Ok(_) = sender.send(res) {}
+            };
+            let recv_task = async {
+                if let Ok(res) = recevier.await {
+                    println!("The result in test_tokio_oneshot_block_on is {}", res);
+                    assert_eq!("hello tokio", res);
+                }
+            };
+
+            rt.block_on(async { tokio::join!(send_task, recv_task) });
+        }
+    }
+
+    #[test]
+    fn test_tokio_oneshot_block_on_all() {
+        if let Ok(rt) = runtime::Builder::new_multi_thread().enable_all().build() {
+            let (sender, recevier) = sync::oneshot::channel();
+            rt.block_on(async move {
+                tokio::spawn(async move {
+                    let res = hello_tokio().await;
+                    if let Ok(_) = sender.send(res) {}
+                });
+
+                if let Ok(res) = recevier.await {
+                    println!("The result in test_tokio_oneshot_block_on_all is {}", res);
+                    assert_eq!("hello tokio", res);
+                }
+            });
+        }
+    }
 }
