@@ -2,18 +2,16 @@ use std::marker::PhantomData;
 
 use async_std;
 use futures;
-use tokio;
 #[macro_use]
 extern crate slog_logger;
 
 use asyncstd;
 use procmacros::{Builder, BuilderEach, CustomDebug};
-use tokioasync;
 
 //#[async_std::main]
 //async fn main() {
 fn main() {
-    slog_logger::setup_logger(false, "", 0, false, false);
+    slog_logger::setup_logger(false, "", 0, false, false, false);
     let builder = Command::builder()
         .executable("lucifer".to_owned())
         .args(vec![])
@@ -48,13 +46,11 @@ fn main() {
     ));
 
     info!("{}, {}", fake_db, fake_file);
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    rt.block_on(async {
-        tokio::join!(
-            tokioasync::tokio_tcp_server(),
-            //tokioasync::tokio_unix_socket_server("zhangjl.socket"),
-        )
-    });
+    hello.run();
+}
+
+fn hello() {
+    info!("hello world");
 }
 
 #[derive(Debug, Builder)]
@@ -86,4 +82,19 @@ pub struct Custom<'a, T, U: TraitA> {
     age: u8,
     other: T,
     complex: PhantomData<U::Value>,
+}
+
+trait Testable {
+    fn run(&self);
+}
+
+impl<T> Testable for T
+where
+    T: Fn(),
+{
+    fn run(&self) {
+        info!("Run the T: {}", std::any::type_name::<T>());
+        self();
+        info!("Finished the running");
+    }
 }

@@ -2,10 +2,10 @@
 name = "futurebase"
 version = "0.1.0"
 authors = ["root"]
-edition = "2018"
+edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
 futures = "0.3.15"
-slog-logger = {git = "https://github.com/luoyancn/slog-logger", tag = "v0.7.0"}
+slog-logger = {git = "https://github.com/luoyancn/slog-logger", tag = "v0.8.0"}

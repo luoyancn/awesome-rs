@@ -3,10 +3,9 @@ use std::ffi::OsString;
 use std::str;
 use std::time;
 
-use futures;
 use tokio::fs;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
-use tokio::net::{TcpListener, TcpStream, UnixListener, UnixStream};
+use tokio::net::{TcpListener, UnixListener};
 use tokio::time::sleep;
 
 #[macro_use]
@@ -131,6 +130,7 @@ mod tests {
 
     use super::*;
     use tokio;
+    use tokio::net::{TcpStream, UnixStream};
 
     #[tokio::test]
     async fn test_hello_tokio() {
@@ -166,7 +166,7 @@ mod tests {
     #[tokio::test]
     async fn test_tokio_fs_walk() {
         let res =
-            fs_direntry_tokio("/mnt/d/github.com/workrusts/cookbook/awesome/tokioasync").await;
+            fs_direntry_tokio("/mnt/d/github.com/workrusts/cookbook/awesome/asynctokio").await;
         assert_eq!(vec!["Cargo.toml", "src"], res.unwrap());
     }
 
@@ -383,6 +383,189 @@ mod tests {
                     assert_eq!("hello tokio", res);
                 }
             });
+        }
+    }
+
+    async fn hello_index(input: u32) -> String {
+        format!("Hello, {}", input)
+    }
+
+    #[tokio::test]
+    async fn test_tokio_mpsc() {
+        let (sender, mut receiver) = sync::mpsc::channel(24);
+        tokio::spawn(async move {
+            for i in 1..10 {
+                let res = hello_index(i).await;
+                if let Ok(_) = sender.send(res).await {
+                    println!("Send {} success", i);
+                }
+            }
+        });
+
+        let mut index = 1;
+        while let Some(res) = receiver.recv().await {
+            assert_eq!(format!("Hello, {}", index), res);
+            index += 1;
+        }
+    }
+
+    #[test]
+    fn test_tokio_mpsc_block_on() {
+        let (sender, mut receiver) = sync::mpsc::channel(24);
+        if let Ok(rt) = runtime::Builder::new_multi_thread().enable_all().build() {
+            rt.block_on(async move {
+                tokio::spawn(async move {
+                    for i in 1..10 {
+                        let res = hello_index(i).await;
+                        if let Ok(_) = sender.send(res).await {
+                            println!("Send {} success", i);
+                        }
+                    }
+                });
+
+                let mut index = 1;
+                while let Some(res) = receiver.recv().await {
+                    assert_eq!(format!("Hello, {}", index), res);
+                    index += 1;
+                }
+            });
+        }
+    }
+
+    #[tokio::test]
+    async fn test_tokio_mpsc_clone() {
+        let (sender, mut receiver) = sync::mpsc::channel(24);
+        for i in 1..10 {
+            let sender_clone = sender.clone();
+            tokio::spawn(async move { if let Ok(_) = sender_clone.send(i).await {} });
+        }
+
+        drop(sender);
+
+        let mut index = 1;
+        while let Some(res) = receiver.recv().await {
+            assert_eq!(index, res);
+            index += 1;
+        }
+    }
+
+    struct Temp {
+        age: u8,
+    }
+
+    #[tokio::test]
+    async fn test_tokio_mpsc_clone_datatype() {
+        let (sender, mut receiver) = sync::mpsc::channel::<Temp>(24);
+        for i in 1..10 {
+            let sender_clone = sender.clone();
+            tokio::spawn(async move { if let Ok(_) = sender_clone.send(Temp { age: i }).await {} });
+        }
+
+        drop(sender);
+
+        let mut index = 1;
+        while let Some(res) = receiver.recv().await {
+            assert_eq!(index, res.age);
+            index += 1;
+        }
+    }
+
+    enum Commond {
+        Increment,
+    }
+
+    #[tokio::test]
+    async fn test_tokio_mpsc_oneshot_combine() {
+        let (cmd_sender, mut cmd_receiver) =
+            sync::mpsc::channel::<(Commond, sync::oneshot::Sender<u32>)>(32);
+        tokio::spawn(async move {
+            let mut counter: u32 = 0;
+            while let Some((cmd, oneshot_sender)) = cmd_receiver.recv().await {
+                match cmd {
+                    Commond::Increment => {
+                        let prev = counter;
+                        counter += 1;
+                        if let Ok(_) = oneshot_sender.send(prev) {}
+                    }
+                }
+            }
+        });
+
+        let mut join_handlers: Vec<tokio::task::JoinHandle<Option<u32>>> = vec![];
+        for _ in 0..10 {
+            let cmd_sender_clone = cmd_sender.clone();
+            let join_handler = tokio::spawn(async move {
+                let (oneshot_sender, oneshot_receiver) = sync::oneshot::channel::<u32>();
+                if let Some(_) = cmd_sender_clone
+                    .send((Commond::Increment, oneshot_sender))
+                    .await
+                    .ok()
+                {
+                    if let Ok(res) = oneshot_receiver.await {
+                        return Some(res);
+                    }
+                }
+                None
+            });
+            join_handlers.push(join_handler);
+        }
+
+        drop(cmd_sender);
+
+        let mut res_number = vec![];
+        for join_handler in join_handlers.drain(..) {
+            if let Ok(Some(res)) = join_handler.await {
+                res_number.push(res);
+            }
+        }
+
+        assert_eq!(vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9], res_number);
+    }
+
+    #[tokio::test]
+    async fn test_tokio_boardcast_channel() {
+        let (sender, recevier_first) = sync::broadcast::channel(16);
+        let recevier_second = sender.subscribe();
+        let recevier_third = sender.subscribe();
+
+        let mut handlers = vec![];
+
+        for (mut recv, name) in [
+            (recevier_first, stringify!(recevier_first)),
+            (recevier_second, stringify!(recevier_second)),
+            (recevier_third, stringify!(recevier_third)),
+        ] {
+            handlers.push(tokio::spawn(async move {
+                let mut resvec = vec![];
+                while let Ok(res) = recv.recv().await {
+                    println!("recevier {} recevied {}", name, res);
+                    resvec.push(res);
+                }
+                resvec
+            }));
+        }
+
+        for i in 0..10 {
+            if let Ok(_) = sender.send(i) {}
+        }
+
+        drop(sender);
+
+        for joinhandle in handlers {
+            if let Ok(rev) = joinhandle.await {
+                assert_eq!(Vec::from_iter(0..10), rev);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_tokio_watch_basic() {
+        let (watch_sender, mut watch_receiver) = sync::watch::channel("hello");
+
+        tokio::spawn(async move { if let Ok(_) = watch_sender.send("world") {} });
+
+        while let Ok(()) = watch_receiver.changed().await {
+            println!("{}", *watch_receiver.borrow());
         }
     }
 }
