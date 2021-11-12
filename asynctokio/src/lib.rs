@@ -568,4 +568,48 @@ mod tests {
             println!("{}", *watch_receiver.borrow());
         }
     }
+
+    use std::sync::Arc;
+    #[tokio::test]
+    async fn test_tokio_barrier() {
+        let mut handlers = Vec::with_capacity(10);
+        let barrier = Arc::new(sync::Barrier::new(10));
+        for i in 0..10 {
+            let barrier_clone = barrier.clone();
+            handlers.push(tokio::spawn(async move {
+                println!("Before wait in thread {}", i);
+                let wait_result = barrier_clone.wait().await;
+                println!("After wait");
+                if wait_result.is_leader() {
+                    println!("Thread {} is leader", i);
+                }
+                wait_result
+            }));
+        }
+
+        let mut numbers = 0;
+        for handle in handlers {
+            if let Ok(wait_result) = handle.await {
+                if wait_result.is_leader() {
+                    numbers += 1;
+                }
+            }
+        }
+
+        assert_eq!(1, numbers);
+    }
+
+    #[tokio::test]
+    async fn test_tokio_mutex() {
+        let data1 = Arc::new(sync::Mutex::new(0));
+        let data2 = Arc::clone(&data1);
+
+        tokio::spawn(async move {
+            let mut lock = data2.lock().await;
+            *lock += 1;
+        });
+
+        let mut lock = data1.lock().await;
+        *lock += 1;
+    }
 }
