@@ -1,6 +1,8 @@
+use std::collections::VecDeque;
 use std::env::temp_dir;
 use std::ffi::OsString;
 use std::str;
+use std::sync::Mutex;
 use std::time;
 
 use tokio::fs;
@@ -11,9 +13,38 @@ use tokio::time::sleep;
 #[macro_use]
 extern crate slog_logger;
 
+macro_rules! __serial_command__ {
+    ($location: expr) => {{
+        println!("Sucess poweroff the {} board", $location);
+    }};
+}
+
 pub async fn hello_tokio() -> String {
     sleep(time::Duration::from_secs(2)).await;
     "hello tokio".to_owned()
+}
+
+struct Channel<T> {
+    values: Mutex<VecDeque<T>>,
+    notify: tokio::sync::Notify,
+}
+
+impl<T> Channel<T> {
+    pub fn send(&self, value: T) {
+        if let Ok(mut values) = self.values.lock() {
+            values.push_back(value);
+            self.notify.notify_one();
+        }
+    }
+
+    pub async fn recv(&self) -> T {
+        loop {
+            if let Some(value) = self.values.lock().unwrap().pop_front() {
+                return value;
+            }
+            self.notify.notified().await;
+        }
+    }
 }
 
 pub async fn tokio_tcp_server() {
@@ -604,12 +635,243 @@ mod tests {
         let data1 = Arc::new(sync::Mutex::new(0));
         let data2 = Arc::clone(&data1);
 
-        tokio::spawn(async move {
+        let handler = tokio::spawn(async move {
             let mut lock = data2.lock().await;
-            *lock += 1;
+            *lock += 2;
+            *lock
         });
 
-        let mut lock = data1.lock().await;
-        *lock += 1;
+        let res = handler.await.unwrap();
+        println!("The result is {}, {:?}", res, data1);
+        {
+            let mut lock = data1.lock().await;
+            *lock += 2;
+        }
+        println!("{:?}", data1);
+    }
+
+    #[tokio::test]
+    async fn test_tokio_mutex_second() {
+        let count = Arc::new(sync::Mutex::new(10));
+        let copy_count = Arc::clone(&count);
+        for i in 0..5 {
+            let local_count = Arc::clone(&count);
+            tokio::spawn(async move {
+                for j in 0..10 {
+                    let mut lock = local_count.lock().await;
+                    *lock += 1;
+                    println!("{}, {}, {}", i, j, lock);
+                }
+            });
+        }
+        loop {
+            if *copy_count.lock().await > 50 {
+                break;
+            }
+        }
+        println!("Count hit 50");
+    }
+
+    #[tokio::test]
+    async fn test_tokio_mutex_third() {
+        let count = Arc::new(sync::Mutex::new(10));
+        let rel = count.lock_owned().await;
+        println!("The rel is {}", *rel);
+
+        let count = Arc::new(sync::Mutex::new(10));
+        let rel = count.lock().await;
+        println!("The rel is {}", rel);
+
+        use std::sync::Mutex;
+        let count_std = Arc::new(Mutex::new(10));
+        let rel = count_std.lock().unwrap();
+        println!("rel is {}", rel);
+
+        let count_std = Mutex::new(10);
+        let rel = count_std.into_inner().unwrap();
+        println!("rel is {}", rel);
+    }
+
+    #[test]
+    fn block_test_tokio() {
+        async fn __in__() {
+            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+            __serial_command__!(123);
+        }
+        async fn __out__() {
+            println!("hello world");
+        }
+
+        if let Ok(multi_rt) = runtime::Runtime::new() {
+            multi_rt.block_on(async {
+                tokio::join!(__in__(), __out__());
+            });
+            drop(multi_rt);
+        }
+
+        println!("let`s go out of the async tasks");
+    }
+
+    #[tokio::test]
+    async fn test_tokio_notify_base() {
+        let notity = Arc::new(tokio::sync::Notify::new());
+        let notify_copy = notity.clone();
+
+        let handle = tokio::spawn(async move {
+            notify_copy.notified().await;
+            println!("Notify arrived");
+        });
+
+        //tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+        println!("Send the notify");
+        notity.notify_one();
+        //notity.notify_waiters();
+        if let Ok(_) = handle.await {}
+    }
+
+    #[tokio::test]
+    async fn test_tokio_notify_channel() {
+        let channel: Channel<u8> = Channel {
+            values: Mutex::new(VecDeque::new()),
+            notify: tokio::sync::Notify::new(),
+        };
+
+        channel.send(32);
+        let res = channel.recv().await;
+        println!("The res is {}", res);
+    }
+
+    #[tokio::test]
+    async fn test_tokio_notify_all() {
+        let notify = Arc::new(tokio::sync::Notify::new());
+        let notify_copy = notify.clone();
+
+        let notified_1 = notify.notified();
+        let notified_2 = notify.notified();
+
+        tokio::spawn(async move {
+            println!("sending notifications");
+            notify_copy.notify_waiters();
+        });
+
+        notified_1.await;
+        notified_2.await;
+    }
+
+    #[tokio::test]
+    async fn test_tokio_notify_all_other() {
+        let notify = Arc::new(tokio::sync::Notify::new());
+        let notify_copy_1 = notify.clone();
+        let notify_copy_2 = notify.clone();
+
+        let task_1 = tokio::spawn(async move {
+            notify_copy_1.notified().await;
+            println!("task1 completed");
+        });
+
+        notify.notify_one();
+        task_1.await;
+
+        let task_2 = tokio::spawn(async move {
+            notify_copy_2.notified().await;
+            println!("task2 completed");
+        });
+
+        notify.notify_one();
+        task_2.await;
+    }
+
+    #[tokio::test]
+    async fn test_tokio_rwlock() {
+        let rwlock = Arc::new(tokio::sync::RwLock::new(100));
+        let rw_lock_copy_1 = rwlock.clone();
+        let rw_lock_copy_2 = rwlock.clone();
+
+        let task_1 = tokio::spawn(async move {
+            let res1 = rw_lock_copy_1.read().await;
+            println!("The res1 is {}", res1);
+        });
+
+        let task_2 = tokio::spawn(async move {
+            let res2 = rw_lock_copy_2.read().await;
+            println!("The res2 is {}", res2);
+        });
+
+        {
+            let mut new_value = rwlock.write().await;
+            *new_value += 100;
+            println!("Send complete nofify");
+        }
+
+        let _ = tokio::join!(task_1, task_2);
+
+        let mut owned = rwlock.write_owned().await;
+        *owned = 300;
+        println!("{:?}", owned);
+    }
+
+    #[tokio::test]
+    async fn test_tokio_singal_ctrl_c() {
+        if let Ok(_) = tokio::signal::ctrl_c().await {
+            println!("ctrl-c received!");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_tokio_linux_signal() {
+        if let Ok(mut stream) = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::quit())
+        {
+            loop {
+                stream.recv().await;
+                println!("Got the signal quit");
+            }
+        }
+    }
+
+    use tokio_stream::{self as stream, StreamExt};
+
+    #[tokio::test]
+    async fn test_tokio_select_pin() {
+        let mut stream = stream::iter(vec![1, 2, 3]);
+        let __sleep__ = tokio::time::sleep(tokio::time::Duration::from_secs(1));
+        tokio::pin!(__sleep__);
+
+        loop {
+            tokio::select! {
+                maybe_v = stream.next() => {
+                    if let Some(v) = maybe_v {
+                        println!("Got = {}", v);
+                    }else {
+                        println!("complete");
+                        break;
+                    }
+                }
+                _ = &mut __sleep__ => {
+                    println!("Time out");
+                    break;
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_tokio_select_ticker() {
+        let mut stream = stream::iter(vec![1, 2, 3]);
+        let mut __ticker__ = tokio::time::interval(tokio::time::Duration::from_millis(1));
+        loop {
+            tokio::select! {
+                _ = __ticker__.tick() => {
+                    println!("waiting for the opertion complete...");
+                }
+                maybe_v = stream.next() => {
+                    if let Some(v) = maybe_v {
+                        println!("Got = {}", v);
+                    }else {
+                        println!("complete");
+                        break;
+                    }
+                }
+            }
+        }
     }
 }
