@@ -14,3 +14,4 @@ futurebase = {path = "futurebase", version = "0.1.0"}
 procmacros = {path = "procmacros", version = "0.1.0"}
 asyncstd = {path = "asyncstd", version = "0.1.0"}
 asynctokio = {path = "asynctokio", version = "0.1.0"}
+crossbeammanual = {path = "crossbeammanual", version = "0.1.0"}
